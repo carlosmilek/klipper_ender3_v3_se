@@ -1,0 +1,180 @@
+From 0607321d3fb14d89a8b1698dd6e1abd316d971f3 Mon Sep 17 00:00:00 2001
+From: carlosmilek <carlosmilek@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 17:52:50 +0000
+Subject: [PATCH] prtouch: fix probe_result handling, add PRTOUCH_AUTO_Z and
+ v2-style sanity checks
+
+1) PRTOUCH_PROBE_ZOFFSET crashed at the end: probe.run_single_probe() returns a
+   probe_result namedtuple and the last line mutated it. Builds a plain list for
+   probe_calibrate_finalize() instead.
+
+2) New PRTOUCH_AUTO_Z: measures the nozzle contact with the load cell and applies
+   SET_GCODE_OFFSET Z_ADJUST=<contact> MOVE=1 (the auto-Z the closed z_compensate
+   module provides in the stock firmware).
+
+3) Sanity checks recovered from the closed v2 module, reusing its error codes:
+   key521 constant value, key525 overpressure, key524 noise (log), key520 read
+   interval > 11 ms (log), key526 lost step (log). Adds PRTOUCH_SANITY.
+---
+ klippy/extras/prtouch.py | 99 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 97 insertions(+), 2 deletions(-)
+
+diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
+index 77bffee9..c62af006 100644
+--- a/klippy/extras/prtouch.py
++++ b/klippy/extras/prtouch.py
+@@ -38,6 +38,17 @@ class PRTouchCFG:
+         self.wipe_retract_distance = config.getfloat('wipe_retract_distance', default=0, minval=0, maxval=50)
+         self.probe_name = config.get('probe_name', default='bltouch')
+ 
++        # Sanidades inspiradas no modulo fechado v2 - ver docs/ANALISE_PATOUCH_V2.md
++        # Erros "duros" (sempre ativos): valor constante e pressao excessiva.
++        self.ck_sanity = config.getboolean('ck_sanity', default=True)
++        self.ck_noise_err = config.getboolean('ck_noise_err', default=False)
++        self.ck_read_interval_err = config.getboolean('ck_read_interval_err', default=False)
++        self.press_max_factor = config.getfloat('press_max_factor', default=2.0, minval=1.0, maxval=10.0)
++        self.pres_noise_max = config.getfloat('pres_noise_max', default=0.5, minval=0.05, maxval=1.0)
++        self.max_read_ms = config.getfloat('max_read_ms', default=11.0, minval=1.0, maxval=100.0)
++        self.max_step_ratio = config.getfloat('max_step_ratio', default=1.5, minval=1.05, maxval=5.0)
++        self.sanity_last = {}
++
+         self.stored_profs = config.get_prefix_sections('prtouch')
+         self.stored_profs = self.stored_profs[1] if (len(self.stored_profs) == 2) else None
+         pass
+@@ -94,8 +105,19 @@ class PRTouchZOffsetWrapper:
+         self.obj.gcode.register_command('PRTOUCH_PROBE_ZOFFSET', self.cmd_PRTOUCH_PROBE_ZOFFSET, desc=self.cmd_PRTOUCH_PROBE_ZOFFSET_help)
+         self.obj.gcode.register_command('NOZZLE_CLEAR', self.cmd_NOZZLE_CLEAR, desc=self.cmd_NOZZLE_CLEAR_help)
+         self.obj.gcode.register_command('PRTOUCH_ACCURACY', self.cmd_PRTOUCH_ACCURACY, desc=self.cmd_PRTOUCH_ACCURACY_help)
++        self.obj.gcode.register_command('PRTOUCH_AUTO_Z', self.cmd_PRTOUCH_AUTO_Z, desc=self.cmd_PRTOUCH_AUTO_Z_help)
++        self.obj.gcode.register_command('PRTOUCH_SANITY', self.cmd_PRTOUCH_SANITY, desc="Mostra limiares e ultimas medidas das sanidades do PRTouch")
+         pass
+ 
++    cmd_PRTOUCH_SANITY_help = "Mostra limiares e ultimas medidas das sanidades do PRTouch"
++    def cmd_PRTOUCH_SANITY(self, gcmd):
++        c = self.cfg
++        self.pnt_msg('SANIDADE: ativa=%s noise_err=%s read_err=%s | press_max=%.0fx max_hold | ruido_max=%.2fx max_hold | read_max=%.1fms | step_ratio=%.2f'
++                     % (c.ck_sanity, c.ck_noise_err, c.ck_read_interval_err,
++                        c.press_max_factor, c.pres_noise_max, c.max_read_ms, c.max_step_ratio))
++        for k in sorted(c.sanity_last):
++            self.pnt_msg('  %s = %s' % (k, c.sanity_last[k]))
++
+     def _handle_mcu_identify(self):
+         self.obj.find_objs()
+         min_x, min_y = self.obj.bed_mesh.bmc.mesh_min
+@@ -112,6 +134,36 @@ class PRTouchZOffsetWrapper:
+     def ck_sys_sta(self):
+         return not self.obj.hx711s.is_shutdown and not self.obj.hx711s.is_timeout and  not self.obj.dirzctl.is_shutdown and not self.obj.dirzctl.is_timeout
+ 
++    # ── sanidades portadas do PRTouch v2 da  ────────────────────
++    # Codigos/mensagens identicos aos do wrapper fechado (key520..key525),
++    # para que a UI/erro do app reconheca o mesmo texto.
++    def _san_err(self, key_code, msg):
++        raise self.obj.printer.command_error('{"code":"%s", "msg":"%s"}' % (key_code, msg))
++
++    def _ck_sanity_vals(self, ch, vals, max_hold):
++        if not self.cfg.ck_sanity or vals is None or len(vals) < 4:
++            return
++        vmin = min(vals)
++        vmax = max(vals)
++        self.cfg.sanity_last['ch%d_min' % ch] = vmin
++        self.cfg.sanity_last['ch%d_max' % ch] = vmax
++        if vmax == vmin:
++            self._san_err('key521',
++                          'PR_ERR_CODE_PRES_VAL_IS_CONSTANT: The pressure data for channel=%d is incorrect. The value is constant %s.' % (ch, vmin))
++        if vmax > max_hold * self.cfg.press_max_factor:
++            self._san_err('key525',
++                          'PR_ERR_CODE_PRESS_TOO_LARGE: Excessive pressure was detected, possibly from the nozzle scraping the hot bed, channel=%d.' % ch)
++        half = vals[:max(2, len(vals) // 2)]
++        p2p = max(half) - min(half)
++        self.cfg.sanity_last['ch%d_noise' % ch] = p2p
++        limit = self.cfg.pres_noise_max * max_hold
++        if p2p > limit:
++            if self.cfg.ck_noise_err:
++                self._san_err('key524',
++                              'PR_ERR_CODE_PRES_NOISE_TOO_BIG: Sensor data noise is too big, channel=%d.' % ch)
++            else:
++                logging.warning('prtouch: ruido alto ch%d p2p=%s (limite %.0f)' % (ch, p2p, limit))
++
+     def _ck_g28ed(self, is_precision=True):
+         for i in range(3):
+             if self.obj.kin.limits[i][0] > self.obj.kin.limits[i][1]:
+@@ -307,6 +359,23 @@ class PRTouchZOffsetWrapper:
+             return up_all_cnt, up_all_cnt, False
+         del hx711_params[0:(len(hx711_params) - self.cfg.pi_count)]
+ 
++        # sanidade: intervalo de leitura (PR_ERR_CODE_PRES_READ_DATA_TIMEOUT)
++        try:
++            nts = [p['nt'] for p in hx711_params]
++            deltas = [((nts[i] - nts[i - 1]) & 0xFFFFFFFF) for i in range(1, len(nts))]
++            if deltas:
++                med = sorted(deltas)[len(deltas) // 2] / self.obj.hx711s.mcu_freq * 1000.0
++                self.cfg.sanity_last['read_ms'] = med
++                if med > self.cfg.max_read_ms:
++                    msg = ('PR_ERR_CODE_PRES_READ_DATA_TIMEOUT: The data read interval is too large, '
++                           'need=%.1fms, actual=%.2fms.' % (self.cfg.max_read_ms, med))
++                    if self.cfg.ck_read_interval_err:
++                        self._san_err('key520', msg)
++                    else:
++                        logging.warning('prtouch: ' + msg)
++        except Exception:
++            pass
++
+         vals_p = [x for x in hx711_vals]
+         max_val = max(vals_p)
+         min_val = min(vals_p)
+@@ -331,11 +400,18 @@ class PRTouchZOffsetWrapper:
+         limt_up_cnt = int(10 / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
+         up_min_cnt = up_min_cnt if up_min_cnt < limt_up_cnt else limt_up_cnt  
+         up_all_cnt = up_all_cnt if up_all_cnt < limt_up_cnt else limt_up_cnt
++        step_cmd = getattr(self.val, 'step_cmd', 0)
++        self.cfg.sanity_last['step_cmd'] = step_cmd
++        self.cfg.sanity_last['step_all'] = up_all_cnt
++        if step_cmd and up_all_cnt > step_cmd * self.cfg.max_step_ratio:
++            logging.warning('prtouch: possivel perda de passo (up_all=%d, cmd=%d) - PR_ERR_CODE_HAVE_LOST_STEP'
++                            % (up_all_cnt, step_cmd))
+         return (up_min_cnt if up_min_cnt >= 0 else 0), up_all_cnt, True
+ 
+     def probe_by_step(self, rdy_pos, speed_mm, min_dis_mm, min_hold, max_hold, up_after=True):
+         self.obj.hx711s.read_base(int(self.cfg.base_count / 2), max_hold)
+         step_cnt = int(min_dis_mm / (self.obj.dirzctl.steppers[0].get_step_dist() * self.obj.dirzctl.step_base))
++        self.val.step_cmd = step_cnt
+         step_us = int(((min_dis_mm / speed_mm) * 1000 * 1000) / step_cnt)
+         self.obj.hx711s.query_start(self.cfg.pi_count * 2, int(65535), del_dirty=True, show_msg=False, is_ck_con=True)        
+         self.obj.dirzctl.check_and_run(0, int(step_us), int(step_cnt), wait_finish=False, is_ck_con=True)
+@@ -351,6 +427,9 @@ class PRTouchZOffsetWrapper:
+                 continue
+             unfit_vals, tmp_unfit_vals = self.obj.filter.cal_offset_by_vals(self.obj.hx711s.s_count, all_valss, self.obj.filter.lft_k1_oft, self.cfg.pi_count)
+             fit_vals, tmp_fit_vals = self.obj.filter.cal_filter_by_vals(self.obj.hx711s.s_count, all_valss, self.obj.filter.hft_hz, self.obj.filter.lft_k1, self.cfg.pi_count)
++
++            for i in range(self.obj.hx711s.s_count):
++                self._ck_sanity_vals(i, tmp_unfit_vals[i], max_hold)
+             
+             for i in range(self.obj.hx711s.s_count):
+                 if not self._check_trigger(i, tmp_fit_vals[i], tmp_unfit_vals[i], min_hold, max_hold):
+@@ -429,8 +508,24 @@ class PRTouchZOffsetWrapper:
+         if gcmd.get_int('APPLY_Z_ADJUST', 0) == 1:
+             self.obj.gcode.run_script_from_command('SET_GCODE_OFFSET Z_ADJUST=%f MOVE=1' % (z_adjust))
+ 
+-        z_probe[2] = homing_origin[2] + z_adjust - start_z_offset
+-        self.probe_calibrate_finalize(z_probe)
++        # Klipper novo: probe_result e namedtuple (imutavel). Monta lista p/ finalize.
++        z_probe_final = [z_probe[0], z_probe[1], homing_origin[2] + z_adjust - start_z_offset]
++        self.probe_calibrate_finalize(z_probe_final)
++
++    cmd_PRTOUCH_AUTO_Z_help = "Mede o contato do bico na celula e aplica o Z offset automaticamente"
++    def cmd_PRTOUCH_AUTO_Z(self, gcmd):
++        self._ck_g28ed()
++        if gcmd.get_int('CLEAR_NOZZLE', 0) == 1:
++            self.clear_nozzle(self.cfg.hot_min_temp, self.cfg.hot_max_temp,
++                              self.cfg.bed_max_temp, self.cfg.min_hold, self.cfg.max_hold)
++        x = self.cfg.sensor_x + random.uniform(-self.cfg.random_offset, self.cfg.random_offset)
++        y = self.cfg.sensor_y + random.uniform(-self.cfg.random_offset, self.cfg.random_offset)
++        self._move([x, y, self.cfg.bed_max_err + 1.], self.cfg.g29_xy_speed)
++        z_contact = self.probe_z_offset(x, y)
++        self.pnt_msg('PRTOUCH_AUTO_Z: bico tocou a mesa em Z=%.3f (corrigindo)' % z_contact)
++        gcmd.respond_info('PRTOUCH_AUTO_Z: contato=%.3f  Z_ADJUST=%.3f' % (z_contact, z_contact))
++        self.obj.gcode.run_script_from_command('SET_GCODE_OFFSET Z_ADJUST=%f MOVE=1' % (z_contact))
++        self.pnt_msg('PRTOUCH_AUTO_Z: Z_ADJUST aplicado = %.3f' % (z_contact))
+ 
+     cmd_PRTOUCH_ACCURACY_help = "Probe Z-height accuracy at sensoor position"
+     def cmd_PRTOUCH_ACCURACY(self, gcmd):
