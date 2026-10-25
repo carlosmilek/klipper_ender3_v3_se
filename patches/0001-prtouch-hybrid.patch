@@ -1,4 +1,4 @@
-From 0607321d3fb14d89a8b1698dd6e1abd316d971f3 Mon Sep 17 00:00:00 2001
+From 4a6b6ada2efdde7961a2d91670ab37f574def0c7 Mon Sep 17 00:00:00 2001
 From: carlosmilek <carlosmilek@users.noreply.github.com>
 Date: Sun, 25 Oct 2026 17:52:50 +0000
 Subject: [PATCH] prtouch: fix probe_result handling, add PRTOUCH_AUTO_Z and
@@ -16,18 +16,18 @@ Subject: [PATCH] prtouch: fix probe_result handling, add PRTOUCH_AUTO_Z and
    key521 constant value, key525 overpressure, key524 noise (log), key520 read
    interval > 11 ms (log), key526 lost step (log). Adds PRTOUCH_SANITY.
 ---
- klippy/extras/prtouch.py | 99 +++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 97 insertions(+), 2 deletions(-)
+ klippy/extras/prtouch.py | 100 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 98 insertions(+), 2 deletions(-)
 
 diff --git a/klippy/extras/prtouch.py b/klippy/extras/prtouch.py
-index 77bffee9..c62af006 100644
+index 77bffee9..aa67d0d4 100644
 --- a/klippy/extras/prtouch.py
 +++ b/klippy/extras/prtouch.py
 @@ -38,6 +38,17 @@ class PRTouchCFG:
          self.wipe_retract_distance = config.getfloat('wipe_retract_distance', default=0, minval=0, maxval=50)
          self.probe_name = config.get('probe_name', default='bltouch')
  
-+        # Sanidades inspiradas no modulo fechado v2 - ver docs/ANALISE_PATOUCH_V2.md
++        # Sanidades inspiradas no modulo fechado v2 - ver ANALISE_PATOUCH_V2.md
 +        # Erros "duros" (sempre ativos): valor constante e pressao excessiva.
 +        self.ck_sanity = config.getboolean('ck_sanity', default=True)
 +        self.ck_noise_err = config.getboolean('ck_noise_err', default=False)
@@ -151,7 +151,7 @@ index 77bffee9..c62af006 100644
              
              for i in range(self.obj.hx711s.s_count):
                  if not self._check_trigger(i, tmp_fit_vals[i], tmp_unfit_vals[i], min_hold, max_hold):
-@@ -429,8 +508,24 @@ class PRTouchZOffsetWrapper:
+@@ -429,8 +508,25 @@ class PRTouchZOffsetWrapper:
          if gcmd.get_int('APPLY_Z_ADJUST', 0) == 1:
              self.obj.gcode.run_script_from_command('SET_GCODE_OFFSET Z_ADJUST=%f MOVE=1' % (z_adjust))
  
@@ -165,8 +165,9 @@ index 77bffee9..c62af006 100644
 +    def cmd_PRTOUCH_AUTO_Z(self, gcmd):
 +        self._ck_g28ed()
 +        if gcmd.get_int('CLEAR_NOZZLE', 0) == 1:
++            bed_temp = gcmd.get_float('BED_TEMP', self.cfg.bed_max_temp, minval=0.)
 +            self.clear_nozzle(self.cfg.hot_min_temp, self.cfg.hot_max_temp,
-+                              self.cfg.bed_max_temp, self.cfg.min_hold, self.cfg.max_hold)
++                              bed_temp, self.cfg.min_hold, self.cfg.max_hold)
 +        x = self.cfg.sensor_x + random.uniform(-self.cfg.random_offset, self.cfg.random_offset)
 +        y = self.cfg.sensor_y + random.uniform(-self.cfg.random_offset, self.cfg.random_offset)
 +        self._move([x, y, self.cfg.bed_max_err + 1.], self.cfg.g29_xy_speed)
