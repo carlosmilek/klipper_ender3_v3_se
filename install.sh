@@ -129,7 +129,13 @@ server {
         proxy_set_header Connection "upgrade";
         proxy_read_timeout 86400;
     }
-    location ~ ^/(printer|api|access|machine|server)/ {
+    location /api/ {
+        proxy_pass http://127.0.0.1:7125;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        client_max_body_size 1024m;
+    }
+    location ~ ^/(printer|access|machine|server)/ {
         proxy_pass http://127.0.0.1:7125$request_uri;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
