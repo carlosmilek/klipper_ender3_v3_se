@@ -179,3 +179,25 @@ Pinos no V3 SE: `sclk=PA4`, `dout=PC6`.
 
     Achado num teste de instalação do zero (host novo), não numa atualização — por isso passou
     despercebido antes.
+
+---
+
+## 7. Convenção de sinal do `PRTOUCH_AUTO_Z` (fácil de errar)
+
+`PRTOUCH_AUTO_Z` imprime `contato=z_c` (o `Z` do gcode no instante em que a célula sente o bico na
+mesa) e aplica `SET_GCODE_OFFSET Z_ADJUST=z_c`.
+
+Relação com o `z_offset` da config (Klipper: `toolhead = gcode + offset`, e no trigger
+`gcode = z_offset` com físico `h`):
+
+```
+h = z_offset_config - z_c
+```
+
+Exemplo real desta bancada: com `z_offset: 0.72` o `AUTO_Z` mediu `z_c = -0.045` →
+verdadeiro offset **h = 0,765**. Gravando `z_offset: 0.765` e rodando `AUTO_Z` de novo,
+o resíduo tem de ficar **≈ 0,000** — é o auto-teste de que o valor persistido é o que a
+máquina mediu (e não um número ajustado à mão).
+
+Regra prática: **o número final é sempre o que a célula mediu**; o papel serve só para
+conferir a ordem de grandeza.
