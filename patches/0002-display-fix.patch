@@ -1,0 +1,36 @@
+From b1b4f53e96907fc37f076e40ff562d175733e50b Mon Sep 17 00:00:00 2001
+From: carlosmilek <carlosmilek@users.noreply.github.com>
+Date: Sun, 25 Oct 2026 17:58:36 +0000
+Subject: [PATCH] e3v3se_display: fix handle_mcu_error signature and tuple
+ state message
+
+Klipper calls klippy:notify_mcu_error handlers with (msg, details), but the
+handler was declared as (self) -> TypeError during an MCU error, turning a
+recoverable error into a klippy shutdown.
+
+Also get_state_message() returns a tuple on current Klipper; show_popup() then
+calls str methods on it and raises 'tuple object has no attribute expandtabs'.
+
+Both fixed by accepting *args and normalizing the message to a string.
+---
+ klippy/extras/e3v3se_display.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/klippy/extras/e3v3se_display.py b/klippy/extras/e3v3se_display.py
+index b9170cfa..62b01c0c 100644
+--- a/klippy/extras/e3v3se_display.py
++++ b/klippy/extras/e3v3se_display.py
+@@ -662,8 +662,11 @@ class E3v3seDisplay:
+         except Exception as e: 
+             self.error("Error registering M117: %s" % e)
+ 
+-    def handle_mcu_error(self):
+-        self.show_popup(self.printer.get_state_message())
++    def handle_mcu_error(self, *args):
++        state_message = self.printer.get_state_message()
++        if isinstance(state_message, (tuple, list)):
++            state_message = " ".join(str(s) for s in state_message)
++        self.show_popup(state_message)
+ 
+     def cmd_M117(self, gcmd):
+         msg = gcmd.get_raw_command_parameters() or None
