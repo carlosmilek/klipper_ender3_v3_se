@@ -63,8 +63,8 @@ Refaça `MESH_CALIBRATE`/`AUTO_Z` apenas quando trocar bico, placa ou mexer na m
 O `AUTO_Z` é **sob demanda** de propósito (início de impressão rápido, ~40 s a menos por peça).
 Para medir de novo antes de uma peça específica: `PRINT_START BED=.. EXTRUDER=.. AUTO_Z=1`.
 
-O `pressure_advance: 0.045` já vem no `printer.cfg` (direct drive + PLA). Ele é um
-**valor de partida**, não medido: valide nos cantos de um cubo e ajuste entre 0,03 e 0,06.
+O `pressure_advance: 0.03` já vem no `printer.cfg` (direct drive + PLA). Ele é um
+**valor de partida**, não medido: valide nos cantos de um cubo e ajuste entre 0,02 e 0,04.
 Se o material mudar (PETG), reavalie.
 
 ## 4. Fatiador (Orca)
