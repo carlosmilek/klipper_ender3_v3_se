@@ -2,8 +2,7 @@
 
 Klipper para a Ender-3 V3 SE combinando três referências:
 
-- **firmware de fábrica da Creality** (`V1.1.0.29`) — engenharia reversa do rootfs MIPS e dos
-  módulos Cython fechados (`prtouch_v2_wrapper`, `z_compensate_wrapper`);
+- **firmware de fábrica da Creality** (`V1.1.0.29`);
 - **comunidade** `0xD34D/ender3-v3-se-klipper-config` — pinos, CR-Touch, safe_z_home;
 - **fork** `jpcurti/ender3-v3-se-klipper-with-display` — Klipper atual + display original via
   serial bridge no MCU.
