@@ -54,11 +54,18 @@ No Fluidd ou por console:
 | 2 | `PID_EXTRUDER TARGET=210` | salva sozinho (`SAVE_CONFIG` reinicia) |
 | 3 | `PID_BED TARGET=70` | idem |
 | 4 | `MESH_CALIBRATE` | refaz 5×5 e **persiste** o perfil `default` |
-| 5 | `AUTO_Z` | mede o contato pela célula e aplica o offset |
+| 5 | `AUTO_Z` | mede o contato pela célula e aplica o offset (guarde o valor; ele é a base do `z_offset`) |
 | 6 | imprimir | `PRINT_START` carrega o mesh salvo e faz a purga |
 
 Depois disso, o fluxo por peça é só `PRINT_START BED=.. EXTRUDER=..` → mesh carregado → imprime.
 Refaça `MESH_CALIBRATE`/`AUTO_Z` apenas quando trocar bico, placa ou mexer na mesa.
+
+O `AUTO_Z` é **sob demanda** de propósito (início de impressão rápido, ~40 s a menos por peça).
+Para medir de novo antes de uma peça específica: `PRINT_START BED=.. EXTRUDER=.. AUTO_Z=1`.
+
+O `pressure_advance: 0.045` já vem no `printer.cfg` (direct drive + PLA). Ele é um
+**valor de partida**, não medido: valide nos cantos de um cubo e ajuste entre 0,03 e 0,06.
+Se o material mudar (PETG), reavalie.
 
 ## 4. Fatiador (Orca)
 
