@@ -65,13 +65,34 @@ Portamos os que dependem só de dados já disponíveis, **com os mesmos textos/c
 
 Patch `0001`. Também adiciona `PRTOUCH_SANITY` (mostra limiares e últimas medidas).
 
-### 1.4 `e3v3se_display`: `show_popup` quebra com Klipper novo
+### 1.4 `e3v3se_display`: handler de erro do MCU derruba o klippy
+
+Dois problemas no mesmo handler:
+
+```
+TypeError: E3v3seDisplay.handle_mcu_error() takes 1 positional argument but 3 were given
+Transition to shutdown state: Unhandled exception during run
+```
+
+O Klipper chama os handlers de `klippy:notify_mcu_error` com `(msg, details)`, mas a função
+foi declarada como `def handle_mcu_error(self)`. Resultado: **um erro recuperável de MCU vira
+shutdown do klippy**.
+
+E, quando consegue chamar o popup, aparece:
 
 ```
 E3V3SE Display: Error in show_popup: 'tuple' object has no attribute 'expandtabs'
 ```
-O popup recebe uma tupla (formato novo de `get_state_message()`) e chama `.expandtabs()`.
-Correção: `msg = " ".join(map(str, msg)) if isinstance(msg, (tuple, list)) else msg` antes do uso.
+porque `get_state_message()` devolve tupla no Klipper atual.
+
+Correção (`patches/0002-display-fix.patch`):
+```python
+def handle_mcu_error(self, *args):
+    state_message = self.printer.get_state_message()
+    if isinstance(state_message, (tuple, list)):
+        state_message = " ".join(str(s) for s in state_message)
+    self.show_popup(state_message)
+```
 
 ---
 
